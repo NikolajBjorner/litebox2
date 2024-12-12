@@ -4,12 +4,10 @@ use either::Either;
 use thiserror::Error;
 
 /// A provider of a platform upon which LiteBox can execute.
-pub trait Provider: IPInterfaceProvider {
+pub trait Provider: RawMutexProvider + IPInterfaceProvider {
     /// Punch through any functionality that is not explicitly part of the common shared
     /// platform interface. See [`Punchthrough`] for details.
     type Punchthrough: Punchthrough;
-    /// Allocate a new [`RawMutex`].
-    fn new_raw_mutex(&self) -> impl RawMutex;
 }
 
 /// Punchthrough support allowing access to functionality not captured by [`Provider`].
@@ -79,6 +77,12 @@ where
             },
         }
     }
+}
+
+/// A provider of raw mutexes
+pub trait RawMutexProvider {
+    /// Allocate a new [`RawMutex`].
+    fn new_raw_mutex(&self) -> impl RawMutex;
 }
 
 /// A raw mutex/lock API; expected to roughly match (or even be implemented using) a Linux futex.
