@@ -18,4 +18,5 @@ extern crate alloc;
 
 pub mod fs;
 pub mod net;
+pub mod path;
 pub mod platform;
