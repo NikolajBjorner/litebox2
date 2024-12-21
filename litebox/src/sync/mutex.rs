@@ -6,7 +6,7 @@ use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use crate::platform::RawMutex as _;
 
 #[cfg(feature = "lock_tracing")]
-use crate::sync::lock_tracing::{LockTrackerX, LockType, LockedWitness};
+use crate::sync::lock_tracing::{LockType, LockedWitness};
 
 use super::RawSyncPrimitivesProvider;
 
@@ -135,7 +135,7 @@ impl<Platform: RawSyncPrimitivesProvider> SpinEnabledRawMutex<Platform> {
 pub struct MutexGuard<'a, Platform: RawSyncPrimitivesProvider, T: ?Sized + 'a> {
     mutex: &'a Mutex<Platform, T>,
     #[cfg(feature = "lock_tracing")]
-    locked_witness: LockedWitness,
+    locked_witness: LockedWitness<Platform>,
 }
 
 impl<Platform: RawSyncPrimitivesProvider, T: ?Sized> core::ops::Deref
@@ -161,7 +161,7 @@ impl<Platform: RawSyncPrimitivesProvider, T: ?Sized> core::ops::DerefMut
 impl<Platform: RawSyncPrimitivesProvider, T: ?Sized> Drop for MutexGuard<'_, Platform, T> {
     fn drop(&mut self) {
         #[cfg(feature = "lock_tracing")]
-        self.locked_witness.mark_unlock(&self.mutex.tracker);
+        self.locked_witness.mark_unlock();
 
         // SAFETY: Access to the guard means that the current thread is the only thread with access
         unsafe {
@@ -207,18 +207,16 @@ impl<Platform: RawSyncPrimitivesProvider, T> Mutex<Platform, T> {
     #[track_caller]
     pub fn lock(&self) -> MutexGuard<Platform, T> {
         #[cfg(feature = "lock_tracing")]
-        let attempt = LockTrackerX::begin_lock_attempt(
-            &self.tracker,
-            LockType::Mutex,
-            self.raw.raw.underlying_atomic(),
-        );
+        let attempt = self
+            .tracker
+            .begin_lock_attempt(LockType::Mutex, self.raw.raw.underlying_atomic());
 
         self.raw.lock();
 
         MutexGuard {
             mutex: self,
             #[cfg(feature = "lock_tracing")]
-            locked_witness: LockTrackerX::mark_lock(&self.tracker, attempt),
+            locked_witness: self.tracker.mark_lock(attempt),
         }
     }
 }
