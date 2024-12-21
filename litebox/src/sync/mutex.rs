@@ -6,7 +6,7 @@ use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use crate::platform::RawMutex as _;
 
 #[cfg(feature = "lock_tracing")]
-use crate::sync::lock_tracing::{LockType, LockedWitness};
+use crate::sync::lock_tracing::{LockTracker, LockType, LockedWitness};
 
 use super::RawSyncPrimitivesProvider;
 
@@ -179,7 +179,7 @@ pub struct Mutex<Platform: RawSyncPrimitivesProvider, T: ?Sized> {
     raw: SpinEnabledRawMutex<Platform>,
 
     #[cfg(feature = "lock_tracing")]
-    tracker: super::lock_tracing::LockTracker<Platform>,
+    tracker: LockTracker<Platform>,
 
     data: UnsafeCell<T>,
 }

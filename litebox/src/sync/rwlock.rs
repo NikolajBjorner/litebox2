@@ -9,6 +9,9 @@ use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 
 use crate::platform::RawMutex;
 
+#[cfg(feature = "lock_tracing")]
+use crate::sync::lock_tracing::{LockTracker, LockType, LockedWitness};
+
 use super::RawSyncPrimitivesProvider;
 
 struct RawRwLock<Platform: RawSyncPrimitivesProvider> {
@@ -382,19 +385,23 @@ impl<Platform: RawSyncPrimitivesProvider> RawRwLock<Platform> {
 /// information.
 pub struct RwLock<Platform: RawSyncPrimitivesProvider, T: ?Sized> {
     raw: RawRwLock<Platform>,
+
+    #[cfg(feature = "lock_tracing")]
+    tracker: LockTracker<Platform>,
+
     data: UnsafeCell<T>,
 }
 
 pub struct RwLockReadGuard<'a, Platform: RawSyncPrimitivesProvider, T> {
     rwlock: &'a RwLock<Platform, T>,
     #[cfg(feature = "lock_tracing")]
-    locked_witness: LockedWitness,
+    locked_witness: LockedWitness<Platform>,
 }
 
 pub struct RwLockWriteGuard<'a, Platform: RawSyncPrimitivesProvider, T> {
     rwlock: &'a RwLock<Platform, T>,
     #[cfg(feature = "lock_tracing")]
-    locked_witness: LockedWitness,
+    locked_witness: LockedWitness<Platform>,
 }
 
 impl<Platform: RawSyncPrimitivesProvider, T> core::ops::Deref for RwLockReadGuard<'_, Platform, T> {
@@ -454,6 +461,8 @@ impl<Platform: RawSyncPrimitivesProvider, T> RwLock<Platform, T> {
         Self {
             raw: RawRwLock::new(sync.platform),
             data: UnsafeCell::new(val),
+            #[cfg(feature = "lock_tracing")]
+            tracker: sync.tracker.clone(),
         }
     }
 
@@ -461,12 +470,14 @@ impl<Platform: RawSyncPrimitivesProvider, T> RwLock<Platform, T> {
     #[track_caller]
     pub fn read(&self) -> RwLockReadGuard<Platform, T> {
         #[cfg(feature = "lock_tracing")]
-        let attempt = LockTracker::begin_lock_attempt(LockType::RwLockRead, self.raw.state);
+        let attempt = self
+            .tracker
+            .begin_lock_attempt(LockType::RwLockRead, &self.raw.state);
         self.raw.read();
         RwLockReadGuard {
             rwlock: self,
             #[cfg(feature = "lock_tracing")]
-            locked_witness: LockTracker::mark_lock(attempt),
+            locked_witness: self.tracker.mark_lock(attempt),
         }
     }
 
@@ -474,12 +485,14 @@ impl<Platform: RawSyncPrimitivesProvider, T> RwLock<Platform, T> {
     #[track_caller]
     pub fn write(&self) -> RwLockWriteGuard<Platform, T> {
         #[cfg(feature = "lock_tracing")]
-        let attempt = LockTracker::begin_lock_attempt(LockType::RwLockWrite, self.raw.state);
+        let attempt = self
+            .tracker
+            .begin_lock_attempt(LockType::RwLockWrite, &self.raw.state);
         self.raw.write();
         RwLockWriteGuard {
             rwlock: self,
             #[cfg(feature = "lock_tracing")]
-            locked_witness: LockTracker::mark_lock(attempt),
+            locked_witness: self.tracker.mark_lock(attempt),
         }
     }
 
