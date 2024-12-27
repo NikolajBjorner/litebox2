@@ -32,3 +32,7 @@ pub mod net;
 pub mod path;
 pub mod platform;
 pub mod sync;
+
+// Explicitly-private, the utilities are not exposed to users of LiteBox, and are intended entirely
+// to contain implementation-internal code.
+mod utilities;
