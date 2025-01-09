@@ -39,6 +39,7 @@ pub struct Network<Platform: platform::IPInterfaceProvider + platform::TimeProvi
     socket_set: smoltcp::iface::SocketSet<'static>,
     /// Handles into the `socket_set`; the position/index corresponds to the `raw_fd` of the
     /// `SocketFd` given out from this module.
+    // TODO: Maybe a better name for this, and `SocketHandle`?
     handles: Vec<Option<SocketHandle>>,
     /// The actual "physical" device, that connects to the platform
     device: phy::Device<Platform>,
@@ -79,12 +80,131 @@ impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static>
 struct SocketHandle {
     /// The handle into the `socket_set`
     handle: smoltcp::iface::SocketHandle,
-    /// The protocol for this socket
-    protocol: Protocol,
+    // Protocol-specific data
+    specific: ProtocolSpecific,
+}
+
+impl core::ops::Deref for SocketHandle {
+    type Target = ProtocolSpecific;
+    fn deref(&self) -> &Self::Target {
+        &self.specific
+    }
+}
+impl core::ops::DerefMut for SocketHandle {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.specific
+    }
+}
+
+/// The [`ProtocolSpecific`] stores socket-type-specific data
+enum ProtocolSpecific {
+    Tcp(TcpSpecific),
+    Udp(UdpSpecific),
+    Icmp(IcmpSpecific),
+    Raw(RawSpecific),
+}
+
+/// Socket-specific data for TCP sockets
+struct TcpSpecific {
     /// A local port associated with this socket, if any
     local_port: Option<LocalPort>,
+    /// Server socket specific data
+    server_socket: Option<TcpServerSpecific>,
+}
+
+/// Socket-specific data for TCP server sockets
+struct TcpServerSpecific {
     /// IP listening endpoint, if used as a server socket
-    ip_listening_endpoint: Option<smoltcp::wire::IpListenEndpoint>,
+    ip_listen_endpoint: smoltcp::wire::IpListenEndpoint,
+}
+
+/// Socket-specific data for UDP sockets
+struct UdpSpecific {}
+
+/// Socket-specific data for ICMP sockets
+struct IcmpSpecific {}
+
+/// Socket-specific data for RAW sockets
+struct RawSpecific {
+    protocol: u8,
+}
+
+impl ProtocolSpecific {
+    /// Get the [`Protocol`] for this socket
+    fn protocol(&self) -> Protocol {
+        match self {
+            ProtocolSpecific::Tcp(_) => Protocol::Tcp,
+            ProtocolSpecific::Udp(_) => Protocol::Udp,
+            ProtocolSpecific::Icmp(_) => Protocol::Icmp,
+            ProtocolSpecific::Raw(RawSpecific { protocol, .. }) => Protocol::Raw {
+                protocol: *protocol,
+            },
+        }
+    }
+
+    /// Obtain a reference to the tcp-socket-specific data. Panics if non-TCP.
+    fn tcp(&self) -> &TcpSpecific {
+        match self {
+            ProtocolSpecific::Tcp(specific) => specific,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Obtain a mutable reference to the tcp-socket-specific data. Panics if non-TCP.
+    fn tcp_mut(&mut self) -> &mut TcpSpecific {
+        match self {
+            ProtocolSpecific::Tcp(specific) => specific,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Obtain a reference to the udp-socket-specific data. Panics if non-UDP.
+    fn udp(&self) -> &UdpSpecific {
+        match self {
+            ProtocolSpecific::Udp(specific) => specific,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Obtain a mutable reference to the udp-socket-specific data. Panics if non-UDP.
+    fn udp_mut(&mut self) -> &mut UdpSpecific {
+        match self {
+            ProtocolSpecific::Udp(specific) => specific,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Obtain a reference to the icmp-socket-specific data. Panics if non-ICMP.
+    fn icmp(&self) -> &IcmpSpecific {
+        match self {
+            ProtocolSpecific::Icmp(specific) => specific,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Obtain a mutable reference to the icmp-socket-specific data. Panics if non-ICMP.
+    fn icmp_mut(&mut self) -> &mut IcmpSpecific {
+        match self {
+            ProtocolSpecific::Icmp(specific) => specific,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Obtain a reference to the raw-socket-specific data. Panics if non-RAW.
+    fn raw(&self) -> &RawSpecific {
+        match self {
+            ProtocolSpecific::Raw(specific) => specific,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Obtain a mutable reference to the raw-socket-specific data. Panics if non-RAW.
+    fn raw_mut(&mut self) -> &mut RawSpecific {
+        match self {
+            ProtocolSpecific::Raw(specific) => specific,
+            _ => unreachable!(),
+        }
+    }
 }
 
 impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static> Network<Platform> {
@@ -158,9 +278,15 @@ impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static>
         let raw_fd = self.handles.len();
         self.handles.push(Some(SocketHandle {
             handle,
-            protocol,
-            local_port: None,
-            ip_listening_endpoint: None,
+            specific: match protocol {
+                Protocol::Tcp => ProtocolSpecific::Tcp(TcpSpecific {
+                    local_port: None,
+                    server_socket: None,
+                }),
+                Protocol::Udp => unimplemented!(),
+                Protocol::Icmp => unimplemented!(),
+                Protocol::Raw { protocol } => unimplemented!(),
+            },
         }));
 
         Ok(SocketFd {
@@ -181,7 +307,7 @@ impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static>
                 socket.close();
             }
             smoltcp::socket::Socket::Tcp(mut socket) => {
-                if let Some(local_port) = socket_handle.local_port.take() {
+                if let Some(local_port) = socket_handle.specific.tcp_mut().local_port.take() {
                     self.local_port_allocator.deallocate(local_port);
                 }
                 // TODO: Should we `.close()` or should we `.abort()`?
@@ -203,13 +329,14 @@ impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static>
             .as_mut()
             .ok_or(ConnectError::InvalidFd)?;
 
-        match socket_handle.protocol {
+        match socket_handle.protocol() {
             Protocol::Tcp => {
                 let socket: &mut tcp::Socket = self.socket_set.get_mut(socket_handle.handle);
                 let local_port = self.local_port_allocator.ephemeral_port()?;
                 let local_endpoint = local_port.port();
                 socket.connect(self.interface.context(), *addr, local_endpoint);
-                let old_port = core::mem::replace(&mut socket_handle.local_port, Some(local_port));
+                let old_port =
+                    core::mem::replace(&mut socket_handle.tcp_mut().local_port, Some(local_port));
                 if old_port.is_some() {
                     // Need to think about how to handle this situation
                     unimplemented!()
@@ -232,10 +359,11 @@ impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static>
             .as_mut()
             .ok_or(BindError::InvalidFd)?;
 
-        match socket_handle.protocol {
+        match socket_handle.protocol() {
             Protocol::Tcp => {
-                if socket_handle.ip_listening_endpoint.is_some() {
-                    // Need to think about how to ahdnle this situation
+                if socket_handle.tcp().server_socket.is_some() {
+                    // Need to think about how to handle this situation where this has already been
+                    // marked as a server socket.
                     unimplemented!()
                 }
                 let port = match self.local_port_allocator.specific_port(
@@ -244,7 +372,8 @@ impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static>
                         .or(Err(BindError::UnsupportedAddress(*socket_addr)))?,
                 ) {
                     Ok(lp) => {
-                        let old_lp = core::mem::replace(&mut socket_handle.local_port, Some(lp));
+                        let old_lp =
+                            core::mem::replace(&mut socket_handle.tcp_mut().local_port, Some(lp));
                         if let Some(old) = old_lp {
                             self.local_port_allocator.deallocate(old);
                             // Currently unsure if the dealloc is sufficient and if we need to do
@@ -264,9 +393,11 @@ impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static>
                         }
                     },
                 };
-                socket_handle.ip_listening_endpoint = Some(smoltcp::wire::IpListenEndpoint {
-                    addr: Some(smoltcp::wire::IpAddress::Ipv4(*addr.ip())),
-                    port,
+                socket_handle.tcp_mut().server_socket = Some(TcpServerSpecific {
+                    ip_listen_endpoint: smoltcp::wire::IpListenEndpoint {
+                        addr: Some(smoltcp::wire::IpAddress::Ipv4(*addr.ip())),
+                        port,
+                    },
                 });
                 Ok(())
             }
@@ -305,7 +436,7 @@ impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static>
             unimplemented!()
         }
 
-        match socket_handle.protocol {
+        match socket_handle.protocol() {
             Protocol::Tcp => self
                 .socket_set
                 .get_mut::<tcp::Socket>(socket_handle.handle)
@@ -332,7 +463,7 @@ impl<Platform: platform::IPInterfaceProvider + platform::TimeProvider + 'static>
             unimplemented!()
         }
 
-        match socket_handle.protocol {
+        match socket_handle.protocol() {
             Protocol::Tcp => self
                 .socket_set
                 .get_mut::<tcp::Socket>(socket_handle.handle)
