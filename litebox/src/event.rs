@@ -215,7 +215,7 @@ impl<Platform: RawMutexProvider> Waitable<'_, Platform> {
                 .triggered_events
                 .block_or_timeout(Events::empty().bits(), timeout)
             {
-                Ok(UnblockedOrTimedOut::Unblocked) | Err(ImmediatelyWokenUp {}) => {
+                Ok(UnblockedOrTimedOut::Unblocked) | Err(ImmediatelyWokenUp) => {
                     Ok(self.builder.polled_events()
                         & Events::from_bits(self.triggered_events.underlying_atomic().load(SeqCst))
                             .unwrap())
@@ -224,7 +224,7 @@ impl<Platform: RawMutexProvider> Waitable<'_, Platform> {
             }
         } else {
             match self.triggered_events.block(Events::empty().bits()) {
-                Ok(()) | Err(ImmediatelyWokenUp {}) => Ok(self.builder.polled_events()
+                Ok(()) | Err(ImmediatelyWokenUp) => Ok(self.builder.polled_events()
                     & Events::from_bits(self.triggered_events.underlying_atomic().load(SeqCst))
                         .unwrap()),
             }
