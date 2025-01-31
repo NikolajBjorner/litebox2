@@ -93,11 +93,42 @@ impl<Platform: sync::RawSyncPrimitivesProvider> super::FileSystem for FileSystem
     }
 
     fn chmod(&self, path: impl crate::path::Arg, mode: super::Mode) -> Result<(), ChmodError> {
-        todo!()
+        let path = self.absolute_path(path)?;
+        let mut root = self.root.write();
+        let (_, entry) = root.parent_and_entry_mut(&path, self.current_user)?;
+        let Some(entry) = entry else {
+            return Err(PathError::NoSuchFileOrDirectory)?;
+        };
+        let perms = entry.perms_mut();
+        if !(self.current_user.user == 0 || self.current_user.user == perms.userinfo.user) {
+            return Err(ChmodError::NotTheOwner);
+        }
+        perms.mode = mode;
+        Ok(())
     }
 
     fn unlink(&self, path: impl crate::path::Arg) -> Result<(), UnlinkError> {
-        todo!()
+        let path = self.absolute_path(path)?;
+        let mut root = self.root.write();
+        let (parent, entry) = root.parent_and_entry_mut(&path, self.current_user)?;
+        let Some((_, parent)) = parent else {
+            // Attempted to remove `/`
+            return Err(UnlinkError::IsADirectory);
+        };
+        let Some(entry) = entry else {
+            return Err(PathError::NoSuchFileOrDirectory)?;
+        };
+        if let Entry::Dir(_) = entry {
+            return Err(UnlinkError::IsADirectory);
+        };
+        if !self.current_user.can_write(&parent.perms) {
+            return Err(UnlinkError::NoWritePerms);
+        }
+        parent.children_count = parent.children_count.checked_sub(1).unwrap();
+        let removed = root.entries.remove(&path).unwrap();
+        // Just a sanity check
+        assert!(matches!(removed, Entry::File(File { .. })));
+        Ok(())
     }
 
     fn mkdir(&self, path: impl crate::path::Arg, mode: super::Mode) -> Result<(), MkdirError> {
@@ -274,6 +305,15 @@ impl RootDir {
 enum Entry {
     File(File),
     Dir(Dir),
+}
+
+impl Entry {
+    fn perms_mut(&mut self) -> &mut Permissions {
+        match self {
+            Entry::File(file) => &mut file.perms,
+            Entry::Dir(dir) => &mut dir.perms,
+        }
+    }
 }
 
 struct Dir {

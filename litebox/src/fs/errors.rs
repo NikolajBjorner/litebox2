@@ -31,12 +31,27 @@ pub enum WriteError {}
 /// Possible errors from [`FileSystem::chmod`]
 #[non_exhaustive]
 #[derive(Error, Debug)]
-pub enum ChmodError {}
+pub enum ChmodError {
+    #[error(
+        "the effective UID does not match the owner of the file, \
+         and the process is not privileged"
+    )]
+    NotTheOwner,
+    #[error(transparent)]
+    PathError(#[from] PathError),
+}
 
 /// Possible errors from [`FileSystem::unlink`]
 #[non_exhaustive]
 #[derive(Error, Debug)]
-pub enum UnlinkError {}
+pub enum UnlinkError {
+    #[error("the parent directory does not allow write permission")]
+    NoWritePerms,
+    #[error("pathname is a directory")]
+    IsADirectory,
+    #[error(transparent)]
+    PathError(#[from] PathError),
+}
 
 /// Possible errors from [`FileSystem::mkdir`]
 #[non_exhaustive]
